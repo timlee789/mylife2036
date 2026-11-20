@@ -38,7 +38,8 @@ export function messageOf(problem: unknown): string {
 
 export type ProjectKind = 'youtube' | 'store' | 'life' | 'other';
 export type ProjectStatus = 'active' | 'resting' | 'completed' | 'archived';
-export type PhaseStatus = 'planned' | 'active' | 'done' | 'paused';
+export type SubStatus = 'planned' | 'active' | 'done' | 'paused';
+export type StepStatus = 'todo' | 'doing' | 'done' | 'skipped';
 export type MilestoneStatus = 'planned' | 'reached' | 'dropped';
 
 export interface ProjectFields {
@@ -51,25 +52,49 @@ export interface ProjectFields {
   vault_note: string | null;
 }
 
-export interface ProjectCard extends ProjectFields {
+export interface CurrentStep {
   id: string;
-  status: ProjectStatus;
-  sort_order: number;
-  now_phases: { id: string; title: string; end_month: string }[];
-  next_phase: { id: string; title: string; start_month: string } | null;
-  next_milestone: { id: string; title: string; target_on: string } | null;
+  title: string;
+  start_on: string;
+  end_on: string;
+  status: StepStatus;
 }
 
-export interface Phase {
+/** One project under a top project. */
+export interface Sub {
   id: string;
   project_id: string;
-  project_title: string;
-  project_kind: ProjectKind;
   title: string;
-  start_month: string;
-  end_month: string;
-  status: PhaseStatus;
-  goal: string | null;
+  status: SubStatus;
+  start_on: string;
+  due_on: string;
+  end_on: string;
+  done_on: string | null;
+  vault_note: string | null;
+  sort_order: number;
+  steps_done: number;
+  steps_total: number;
+  percent: number | null;
+  current_step: CurrentStep | null;
+}
+
+export interface Step {
+  id: string;
+  subproject_id: string;
+  position: number;
+  title: string;
+  start_on: string;
+  end_on: string;
+  status: StepStatus;
+  done_on: string | null;
+  note: string | null;
+}
+
+export interface ProcedureStep {
+  id?: string;
+  position?: number;
+  title: string;
+  days: number;
 }
 
 export interface Milestone {
@@ -83,26 +108,36 @@ export interface Milestone {
   note: string | null;
 }
 
+export interface ProjectCard extends ProjectFields {
+  id: string;
+  status: ProjectStatus;
+  sort_order: number;
+  active: Sub[];
+  next_planned: Sub | null;
+  counts: { planned: number; active: number; done_this_year: number; done_total: number };
+  next_milestone: { id: string; title: string; target_on: string } | null;
+}
+
 export interface ProjectOverview {
   today: string;
   projects: ProjectCard[];
-  phases: Phase[];
+  subprojects: Sub[];
   milestones: Milestone[];
   upcoming_milestones: Milestone[];
 }
 
 export interface ProjectDetail extends ProjectCard {
   today: string;
-  phases: Phase[];
+  subprojects: Sub[];
+  procedure: ProcedureStep[];
   milestones: Milestone[];
 }
 
-export interface NewPhase {
-  title: string;
-  start_month: string;
-  end_month: string;
-  status?: PhaseStatus;
-  goal?: string | null;
+export interface SubDetail extends Sub {
+  today: string;
+  top: { id: string; title: string; kind: ProjectKind; sort_order: number };
+  steps: Step[];
+  milestones: Milestone[];
 }
 
 export const projectApi = {
@@ -110,9 +145,21 @@ export const projectApi = {
   detail: (id: string) => request<ProjectDetail>('GET', `/projects/${id}`),
   create: (fields: ProjectFields & { sort_order?: number }) => request<{ id: string }>('POST', '/projects', fields),
   update: (id: string, fields: Partial<ProjectFields & { status: ProjectStatus }>) => request<unknown>('PATCH', `/projects/${id}`, fields),
-  addPhase: (projectId: string, phase: NewPhase) => request<{ id: string }>('POST', `/projects/${projectId}/phases`, phase),
-  updatePhase: (id: string, fields: Partial<NewPhase>) => request<unknown>('PATCH', `/phases/${id}`, fields),
-  deletePhase: (id: string) => request<void>('DELETE', `/phases/${id}`),
+  setProcedure: (id: string, steps: ProcedureStep[]) =>
+    request<{ procedure: ProcedureStep[] }>('PUT', `/projects/${id}/procedure`, { steps: steps.map(({ title, days }) => ({ title, days })) }),
+  addSub: (projectId: string, fields: { title: string; start_on: string; due_on?: string; use_procedure: boolean }) =>
+    request<{ id: string }>('POST', `/projects/${projectId}/subprojects`, fields),
+  sub: (id: string) => request<SubDetail>('GET', `/subprojects/${id}`),
+  updateSub: (id: string, fields: Partial<Pick<Sub, 'title' | 'status' | 'start_on' | 'due_on' | 'vault_note'>>) =>
+    request<unknown>('PATCH', `/subprojects/${id}`, fields),
+  deleteSub: (id: string) => request<void>('DELETE', `/subprojects/${id}`),
+  applyProcedure: (id: string) => request<unknown>('POST', `/subprojects/${id}/apply-procedure`),
+  addStep: (subId: string, fields: { title: string; start_on?: string; end_on?: string }) =>
+    request<{ id: string }>('POST', `/subprojects/${subId}/steps`, fields),
+  updateStep: (id: string, fields: Partial<Pick<Step, 'title' | 'start_on' | 'end_on' | 'status' | 'note'>> & { shift_following?: boolean }) =>
+    request<unknown>('PATCH', `/steps/${id}`, fields),
+  moveStep: (id: string, direction: -1 | 1) => request<unknown>('POST', `/steps/${id}/move`, { direction }),
+  deleteStep: (id: string) => request<void>('DELETE', `/steps/${id}`),
   addMilestone: (projectId: string, title: string, target_on: string) =>
     request<{ id: string }>('POST', `/projects/${projectId}/milestones`, { title, target_on }),
   updateMilestone: (id: string, fields: Partial<Pick<Milestone, 'title' | 'target_on' | 'status' | 'note'>>) =>

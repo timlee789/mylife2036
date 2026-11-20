@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS project_log (
 );
 CREATE INDEX IF NOT EXISTS idx_project_log_project ON project_log(project_id, logged_on);
 
+-- project_phases: the second version's month-long phases, converted to subprojects on 2026-11-20.
+-- No longer shown; kept so old data stays in the backup export.
 -- One stretch of work on the timeline: "EP002~EP010 제작기", "메뉴 사진 리뉴얼".
 -- Months are 'YYYY-MM'. The materials themselves live in Obsidian, not here.
 CREATE TABLE IF NOT EXISTS project_phases (
@@ -81,4 +83,53 @@ CREATE TABLE IF NOT EXISTS project_phases (
   CHECK (end_month >= start_month)
 );
 CREATE INDEX IF NOT EXISTS idx_project_phases_project ON project_phases(project_id, start_month);
+
+-- Top project -> projects -> steps.
+-- A top project (e.g. 규영, 책에게 묻다) keeps one standard procedure: the steps every project under it follows.
+CREATE TABLE IF NOT EXISTS procedure_steps (
+  id text PRIMARY KEY,
+  project_id text NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  position integer NOT NULL,
+  title text NOT NULL CHECK (length(trim(title)) > 0),
+  days integer NOT NULL DEFAULT 3 CHECK (days BETWEEN 1 AND 365)
+);
+CREATE INDEX IF NOT EXISTS idx_procedure_steps_project ON procedure_steps(project_id, position);
+
+-- One project under a top project (e.g. 「죽음의 수용소에서」). Dates are 'YYYY-MM-DD'.
+CREATE TABLE IF NOT EXISTS subprojects (
+  id text PRIMARY KEY,
+  project_id text NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  title text NOT NULL CHECK (length(trim(title)) > 0),
+  status text NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','active','done','paused')),
+  start_on text NOT NULL CHECK (start_on ~ '^\d{4}-\d{2}-\d{2}$'),
+  due_on text NOT NULL CHECK (due_on ~ '^\d{4}-\d{2}-\d{2}$'),
+  done_on text CHECK (done_on IS NULL OR done_on ~ '^\d{4}-\d{2}-\d{2}$'),
+  vault_note text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz,
+  CHECK (due_on >= start_on),
+  CHECK ((status = 'done') = (done_on IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_subprojects_project ON subprojects(project_id, start_on);
+
+-- The steps of one project, copied from the procedure and then scheduled on its own timeline.
+CREATE TABLE IF NOT EXISTS subproject_steps (
+  id text PRIMARY KEY,
+  subproject_id text NOT NULL REFERENCES subprojects(id) ON DELETE RESTRICT,
+  position integer NOT NULL,
+  title text NOT NULL CHECK (length(trim(title)) > 0),
+  start_on text NOT NULL CHECK (start_on ~ '^\d{4}-\d{2}-\d{2}$'),
+  end_on text NOT NULL CHECK (end_on ~ '^\d{4}-\d{2}-\d{2}$'),
+  status text NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','doing','done','skipped')),
+  done_on text CHECK (done_on IS NULL OR done_on ~ '^\d{4}-\d{2}-\d{2}$'),
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz,
+  CHECK (end_on >= start_on),
+  CHECK ((status = 'done') = (done_on IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_subproject_steps_sub ON subproject_steps(subproject_id, position);
 `;

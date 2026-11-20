@@ -1111,3 +1111,355 @@ code, .command {
 .year-nav strong {
   font-size: 16px;
 }
+
+/* ---------- top project -> projects -> steps ---------- */
+
+.card-body {
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+}
+
+.card-body .row-head {
+  margin-bottom: 0;
+}
+
+.push {
+  margin-left: auto;
+}
+
+.card-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+
+.sub-mini {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sub-mini li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px;
+  align-items: center;
+  gap: 2px 10px;
+}
+
+.sub-mini .link {
+  min-height: 0;
+  text-align: left;
+  font-weight: 700;
+}
+
+.sub-mini .meta {
+  grid-column: 1 / -1;
+}
+
+.progress-bar {
+  --accent: var(--green);
+  display: inline-block;
+  width: 100%;
+  min-width: 80px;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 70%, transparent);
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.progress-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.crumb {
+  display: block;
+  color: var(--soft);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.crumbs {
+  color: var(--soft);
+}
+
+.crumbs .link {
+  min-height: 0;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.section-head h3 {
+  margin: 0;
+}
+
+.small-btn {
+  min-height: 40px;
+  padding: 0 16px;
+}
+
+.sub-group + .sub-group {
+  margin-top: 14px;
+}
+
+.sub-group h4 {
+  color: var(--soft);
+}
+
+.sub-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sub-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(80px, 1fr) minmax(0, 1.5fr) auto;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 12px 16px;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 16px;
+}
+
+.check input {
+  width: 20px;
+  height: 20px;
+  margin-top: 3px;
+  accent-color: var(--green);
+}
+
+.procedure {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0 0 0 24px;
+}
+
+.procedure li {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.procedure li.total {
+  list-style: none;
+  border-bottom: 0;
+  color: var(--soft);
+}
+
+.procedure-edit {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.procedure-edit li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.procedure-edit input {
+  flex: 1 1 180px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+
+.procedure-edit input.days {
+  flex: 0 0 70px;
+}
+
+.num {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--soft);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.summary {
+  display: grid;
+  gap: 12px;
+}
+
+.summary-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.summary-progress .progress-bar {
+  height: 12px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px 20px;
+  margin: 0;
+}
+
+.facts dt {
+  color: var(--soft);
+  font-size: 14px;
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.steps {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+.step.done .item-title, .step.skipped .item-title {
+  color: var(--soft);
+}
+
+.step.skipped .item-title {
+  text-decoration: line-through;
+}
+
+.step.doing {
+  border-color: var(--gold);
+}
+
+.step-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.step-head .meta {
+  margin-left: auto;
+}
+
+.step-note {
+  margin: 0;
+}
+
+.status.todo { --tone: var(--gray); }
+.status.doing { --tone: var(--gold); }
+.status.done { --tone: var(--green); }
+.status.skipped { --tone: var(--blue); }
+
+.tl-text {
+  position: relative;
+}
+
+.tl-progress {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: color-mix(in srgb, var(--lane) 35%, transparent);
+}
+
+.tl-phase.active .tl-progress {
+  background: color-mix(in srgb, var(--on-fill) 25%, transparent);
+}
+
+.tl-phase.skipped {
+  border-style: dotted;
+  background: transparent;
+  color: var(--soft);
+  text-decoration: line-through;
+}
+
+.tl-key.skipped {
+  border-style: dotted;
+  background: transparent;
+  text-decoration: line-through;
+}
+
+.tl-key.planned {
+  background: transparent;
+}
+
+.lane-name {
+  display: block;
+  border-left: 4px solid var(--lane);
+  padding-left: 8px;
+}
+
+.tl-empty {
+  padding: 14px;
+}
+
+.tl-grid.weeks .tl-label {
+  font-size: 14px;
+}
+
+.danger-zone {
+  margin-top: 8px;
+  text-align: right;
+}
+
+@media (max-width: 700px) {
+  .sub-row {
+    grid-template-columns: minmax(0, 1fr) 100px;
+  }
+  .sub-row .meta {
+    grid-column: 1 / -1;
+  }
+}
+
+.item-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-weight: 700;
+  text-align: left;
+  font-size: 17px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.secondary.small {
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 15px;
+}

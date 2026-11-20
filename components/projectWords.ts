@@ -1,4 +1,4 @@
-import type { MilestoneStatus, PhaseStatus, ProjectKind, ProjectStatus } from './api';
+import type { MilestoneStatus, ProjectKind, ProjectStatus, StepStatus, SubStatus } from './api';
 
 export const KIND_NAMES: Record<ProjectKind, string> = {
   youtube: 'YouTube',
@@ -14,11 +14,18 @@ export const STATUS_NAMES: Record<ProjectStatus, string> = {
   archived: '보관',
 };
 
-export const PHASE_NAMES: Record<PhaseStatus, string> = {
+export const SUB_NAMES: Record<SubStatus, string> = {
   planned: '예정',
   active: '진행 중',
   done: '마침',
   paused: '쉬는 중',
+};
+
+export const STEP_NAMES: Record<StepStatus, string> = {
+  todo: '할 일',
+  doing: '진행 중',
+  done: '완료',
+  skipped: '건너뜀',
 };
 
 export const MILESTONE_NAMES: Record<MilestoneStatus, string> = {
@@ -49,18 +56,27 @@ export function monthOf(day: string): string {
   return `${y}년 ${m}월`;
 }
 
-/** "2026년 12월 – 2027년 3월", or one month when start and end are the same. */
-export function monthRange(start: string, end: string): string {
-  if (start === end) return monthOf(start);
-  const [sy] = start.split('-');
-  const [ey, em] = end.split('-').map(Number);
-  return sy === String(ey) ? `${monthOf(start)} – ${em}월` : `${monthOf(start)} – ${monthOf(end)}`;
+/** Days since 1970-01-01, so every timeline lays dates out on one axis. */
+export function dayNumber(day: string): number {
+  return Date.parse(`${day}T00:00:00Z`) / 86_400_000;
 }
 
-/** Months since year 0, so ranges can be laid out on one axis. */
-export function monthIndex(month: string): number {
-  const [y, m] = month.split('-').map(Number);
-  return y * 12 + (m - 1);
+export function fromDayNumber(n: number): string {
+  return new Date(n * 86_400_000).toISOString().slice(0, 10);
+}
+
+export function addDays(day: string, n: number): string {
+  return fromDayNumber(dayNumber(day) + n);
+}
+
+export function dateRange(start: string, end: string): string {
+  return start === end ? shortDay(start) : `${shortDay(start)} – ${shortDay(end)}`;
+}
+
+/** "3일" or "2주" style length of an inclusive date range. */
+export function lengthOf(start: string, end: string): string {
+  const days = dayNumber(end) - dayNumber(start) + 1;
+  return days % 7 === 0 ? `${days / 7}주` : `${days}일`;
 }
 
 /** "9년 11개월": time left until the plan's last day, counted in whole months. */
