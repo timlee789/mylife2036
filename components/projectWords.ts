@@ -1,14 +1,4 @@
-import type { MilestoneStatus, ProjectKind, ProjectStatus, Stage } from './api';
-
-// The board's words. lib/projects.ts writes the same stage names into the work log.
-export const STAGE_NAMES: Record<ProjectKind, Record<Stage, string>> = {
-  youtube: { idea: '아이디어', prep: '대본', make: '제작', finish: '편집·검토', done: '업로드 완료', hold: '보류' },
-  store: { idea: '아이디어', prep: '기획', make: '제작', finish: '검토', done: '게시 완료', hold: '보류' },
-  life: { idea: '아이디어', prep: '준비', make: '진행', finish: '마무리', done: '완료', hold: '보류' },
-  other: { idea: '아이디어', prep: '준비', make: '제작', finish: '마무리', done: '완료', hold: '보류' },
-};
-
-export const FLOW: Stage[] = ['idea', 'prep', 'make', 'finish'];
+import type { MilestoneStatus, PhaseStatus, ProjectKind, ProjectStatus } from './api';
 
 export const KIND_NAMES: Record<ProjectKind, string> = {
   youtube: 'YouTube',
@@ -22,6 +12,13 @@ export const STATUS_NAMES: Record<ProjectStatus, string> = {
   resting: '쉬는 중',
   completed: '마침',
   archived: '보관',
+};
+
+export const PHASE_NAMES: Record<PhaseStatus, string> = {
+  planned: '예정',
+  active: '진행 중',
+  done: '마침',
+  paused: '쉬는 중',
 };
 
 export const MILESTONE_NAMES: Record<MilestoneStatus, string> = {
@@ -38,6 +35,8 @@ export function obsidianLink(note: string): string {
 }
 
 export const PLAN_END = '2036-11-09';
+export const FIRST_YEAR = 2026;
+export const LAST_YEAR = 2036;
 
 export function shortDay(day: string): string {
   const [y, m, d] = day.split('-').map(Number);
@@ -48,6 +47,20 @@ export function shortDay(day: string): string {
 export function monthOf(day: string): string {
   const [y, m] = day.split('-').map(Number);
   return `${y}년 ${m}월`;
+}
+
+/** "2026년 12월 – 2027년 3월", or one month when start and end are the same. */
+export function monthRange(start: string, end: string): string {
+  if (start === end) return monthOf(start);
+  const [sy] = start.split('-');
+  const [ey, em] = end.split('-').map(Number);
+  return sy === String(ey) ? `${monthOf(start)} – ${em}월` : `${monthOf(start)} – ${monthOf(end)}`;
+}
+
+/** Months since year 0, so ranges can be laid out on one axis. */
+export function monthIndex(month: string): number {
+  const [y, m] = month.split('-').map(Number);
+  return y * 12 + (m - 1);
 }
 
 /** "9년 11개월": time left until the plan's last day, counted in whole months. */

@@ -16,8 +16,6 @@ beforeEach(async () => {
   p = await pj.createProject(q, { title: '규영, 책에게 묻다', kind: 'youtube', summary: '책 한 권 + 질문', next_action: 'EP002 책 고르기' });
 });
 
-const item = (title = 'EP002', extra: Record<string, unknown> = {}) => pj.createItem(q, p, { title, ...extra }, TODAY);
-
 describe('projects', () => {
   it('updates only the fields given', async () => {
     expect(await pj.updateProject(q, p, { next_action: 'EP002 책 고르기' })).toBe('unchanged');
@@ -29,95 +27,89 @@ describe('projects', () => {
     }
     await expect(pj.getProject(q, 'missing')).rejects.toMatchObject({ status: 404 });
   });
+});
 
-  it('moves work through stages, dates finished work and logs each move', async () => {
-    const i = await item('EP002', { stage: 'prep' });
-    expect(await pj.updateItem(q, i, { stage: 'make' }, TODAY)).toBe('updated');
-    expect(await pj.updateItem(q, i, { stage: 'make' }, TODAY)).toBe('unchanged');
-    await pj.updateItem(q, i, { stage: 'done' }, TODAY);
+describe('phases', () => {
+  const phase = (title: string, start_month: string, end_month: string, status = 'planned') =>
+    pj.createPhase(q, p, { title, start_month, end_month, status });
+
+  it('lays phases on months and tells what is now and what comes next', async () => {
+    await phase('채널 준비', '2026-11', '2026-11', 'done');
+    await phase('정기 제작', '2026-12', '2027-03');
+    await phase('지금 하는 일', '2026-10', '2026-12', 'active');
     const got = await pj.getProject(q, p, TODAY);
-    expect(got.items[0].done_on).toBe(TODAY);
-    expect([got.done_this_month, got.done_this_year, got.done_total]).toEqual([1, 1, 1]);
-    expect(got.last_activity_on).toBe(TODAY);
-    const texts = got.log.map((l) => l.text);
-    expect(texts).toContain('EP002: 제작 → 업로드 완료');
-    expect(texts).toContain('EP002: 대본 → 제작');
-    await pj.updateItem(q, i, { stage: 'finish' }, TODAY);
-    expect((await pj.getProject(q, p, TODAY)).items[0].done_on).toBeNull();
+    expect(got.phases.map((f) => f.title)).toEqual(['지금 하는 일', '채널 준비', '정기 제작']);
+    expect(got.now_phases.map((f) => f.title)).toEqual(['지금 하는 일']);
+    expect(got.next_phase?.title).toBe('정기 제작');
+    const o = await pj.overview(q, TODAY);
+    expect(o.phases).toHaveLength(3);
+    expect(o.projects[0].next_phase?.title).toBe('정기 제작');
   });
 
-  it('keeps finished dates honest', async () => {
-    const old = await item('EP001', { stage: 'done', done_on: '2026-11-18' });
-    expect((await pj.getProject(q, p, TODAY)).log[0].logged_on).toBe('2026-11-18');
-    await expect(item('미래', { stage: 'done', done_on: '2026-11-21' })).rejects.toThrow('future');
-    await expect(item('아직', { stage: 'idea', done_on: '2026-11-01' })).rejects.toThrow('only for finished');
-    await expect(pj.updateItem(q, old, { done_on: '2026-12-01' }, TODAY)).rejects.toThrow('future');
-    await expect(item('날짜', { due_on: '2026-2-1' })).rejects.toThrow();
-    await expect(item('날짜', { due_on: '2026-02-30' })).rejects.toThrow();
-    await expect(item('단계', { stage: 'published' })).rejects.toThrow();
+  it('a planned phase that covers this month counts as now', async () => {
+    await phase('이번 달 걸친 단계', '2026-11', '2027-01');
+    expect((await pj.getProject(q, p, TODAY)).now_phases.map((f) => f.title)).toEqual(['이번 달 걸친 단계']);
   });
 
-  it('clears optional fields with null and deletes softly', async () => {
-    const i = await item('EP002', { series: '책 시리즈', link: 'https://youtu.be/x', note: '메모' });
-    await pj.updateItem(q, i, { note: null, series: '  ' }, TODAY);
-    const row = (await pj.getProject(q, p, TODAY)).items[0];
-    expect([row.note, row.series, row.link]).toEqual([null, null, 'https://youtu.be/x']);
-    expect(await pj.deleteItem(q, i)).toBe(true);
-    expect(await pj.deleteItem(q, i)).toBe(false);
-    expect((await pj.getProject(q, p, TODAY)).items).toEqual([]);
-    await expect(pj.updateItem(q, i, { stage: 'make' }, TODAY)).rejects.toMatchObject({ status: 404 });
-    expect(await pj.restoreItem(q, i)).toBe(true);
-    expect((await pj.getProject(q, p, TODAY)).items).toHaveLength(1);
+  it('checks months and keeps the end after the start', async () => {
+    await expect(phase('거꾸로', '2027-03', '2027-01')).rejects.toThrow('before');
+    await expect(phase('잘못된 달', '2026-13', '2027-01')).rejects.toThrow();
+    await expect(phase('너무 먼', '2040-01', '2040-02')).rejects.toThrow();
+    await expect(pj.createPhase(q, p, { title: '상태', start_month: '2027-01', status: 'failed' })).rejects.toThrow();
+    const one = await pj.createPhase(q, p, { title: '한 달', start_month: '2027-02' });
+    expect((await pj.getProject(q, p, TODAY)).phases[0].end_month).toBe('2027-02'); // end defaults to start
+    await expect(pj.updatePhase(q, one, { end_month: '2027-01' })).rejects.toThrow('before');
+    await expect(q("INSERT INTO project_phases(id,project_id,title,start_month,end_month) VALUES('x',$1,'t','2027-05','2027-04')", [p])).rejects.toThrow();
   });
 
-  it('lets goals be moved, reached or let go', async () => {
+  it('edits, clears the goal with null, and deletes softly', async () => {
+    const id = await pj.createPhase(q, p, { title: '정기 제작', start_month: '2026-12', end_month: '2027-03', goal: '월 2편 리듬' });
+    expect(await pj.updatePhase(q, id, { title: '정기 제작' })).toBe('unchanged');
+    expect(await pj.updatePhase(q, id, { status: 'active', end_month: '2027-06', goal: null })).toBe('updated');
+    const row = (await pj.getProject(q, p, TODAY)).phases[0];
+    expect([row.status, row.end_month, row.goal]).toEqual(['active', '2027-06', null]);
+    expect(await pj.deletePhase(q, id)).toBe(true);
+    expect(await pj.deletePhase(q, id)).toBe(false);
+    expect((await pj.getProject(q, p, TODAY)).phases).toEqual([]);
+    await expect(pj.updatePhase(q, id, { title: 'x' })).rejects.toMatchObject({ status: 404 });
+    expect((await pj.exportAll(q)).tables.project_phases).toHaveLength(1); // still in the backup
+  });
+});
+
+describe('milestones', () => {
+  it('can be moved, reached or let go', async () => {
     const m = await pj.createMilestone(q, p, { title: '구독자 1,000명', target_on: '2027-12-31' });
     await expect(pj.createMilestone(q, p, { title: '먼 목표', target_on: '2040-01-01' })).rejects.toThrow();
     expect(await pj.updateMilestone(q, m, { target_on: '2028-06-30' }, TODAY)).toBe('updated');
     await pj.updateMilestone(q, m, { status: 'reached' }, TODAY);
     let got = await pj.getProject(q, p, TODAY);
     expect([got.milestones[0].status, got.milestones[0].reached_on]).toEqual(['reached', TODAY]);
-    expect(got.log[0].text).toBe('목표 달성: 구독자 1,000명');
+    await expect(pj.updateMilestone(q, m, { reached_on: '2026-12-01' }, TODAY)).rejects.toThrow('future');
     await pj.updateMilestone(q, m, { status: 'dropped' }, TODAY);
     got = await pj.getProject(q, p, TODAY);
     expect(got.milestones[0].reached_on).toBeNull();
     const o = await pj.overview(q, TODAY);
-    expect(o.roadmap.milestones).toEqual([]);
+    expect(o.milestones).toEqual([]); // let-go milestones leave the timeline
     expect(o.upcoming_milestones).toEqual([]);
   });
 
-  it('builds the overview and the 2026–2036 roadmap', async () => {
+  it('the overview lists projects in order with their next milestone', async () => {
     const other = await pj.createProject(q, { title: 'Collegiate SNS', kind: 'store', sort_order: 1 });
-    await item('EP001', { stage: 'done', done_on: '2026-11-18' });
-    await item('EP002', { stage: 'make' });
-    await pj.createItem(q, other, { title: '메뉴 사진' }, TODAY);
     await pj.createMilestone(q, other, { title: '게시물 100개', target_on: '2027-06-30' });
-    await pj.addLog(q, other, { text: '사진 촬영', minutes: 40 }, TODAY);
     const o = await pj.overview(q, TODAY);
     expect(o.projects.map((x) => x.title)).toEqual(['규영, 책에게 묻다', 'Collegiate SNS']);
-    expect([o.projects[0].stage_counts.done, o.projects[0].stage_counts.make]).toEqual([1, 1]);
-    expect(o.projects[0].in_progress.map((x) => x.title)).toEqual(['EP002']);
-    expect(o.roadmap.years).toHaveLength(11);
-    expect(o.roadmap.done_by_year[p]).toEqual({ '2026': 1 });
     expect(o.projects[1].next_milestone?.title).toBe('게시물 100개');
-    expect(o.recent_log[0].minutes).toBe(40);
+    expect(o.upcoming_milestones[0].project_title).toBe('Collegiate SNS');
   });
+});
 
-  it('checks work log lines', async () => {
-    await expect(pj.addLog(q, p, { text: '내일 일', logged_on: '2026-11-21' }, TODAY)).rejects.toThrow();
-    await expect(pj.addLog(q, p, { text: '  ' }, TODAY)).rejects.toThrow();
-    await expect(pj.addLog(q, p, { text: '음수', minutes: -1 }, TODAY)).rejects.toThrow();
-    await pj.addLog(q, p, { text: '대본 초안', logged_on: '2026-11-19' }, TODAY);
-    expect((await pj.getProject(q, p, TODAY)).last_activity_on).toBe('2026-11-19');
-  });
-
-  it('exports every table and the database backs up the rules', async () => {
-    await item('EP002', { note: '메모' });
+describe('backup', () => {
+  it('exports every table, including the first version\'s items and log', async () => {
     const data = await pj.exportAll(q);
+    expect(Object.keys(data.tables).sort()).toEqual(['project_items', 'project_log', 'project_milestones', 'project_phases', 'projects']);
     expect(data.tables.projects).toHaveLength(1);
-    expect(data.tables.project_items[0].note).toBe('메모');
-    await expect(q(`INSERT INTO project_items(id,project_id,title,stage) VALUES('x',$1,'t','done')`, [p])).rejects.toThrow();
-    await expect(q('DELETE FROM projects WHERE id=$1', [p])).rejects.toThrow();
+    await pj.createPhase(q, p, { title: '단계', start_month: '2027-01' });
+    await expect(q('DELETE FROM projects WHERE id=$1', [p])).rejects.toThrow(); // a project with phases is never hard-deleted
   });
 });
 

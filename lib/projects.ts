@@ -1,5 +1,7 @@
 /**
- * Project rules: four long-running projects seen together until 2036.
+ * Project rules: the flow of four long-running projects until 2036.
+ * This site plans the flow only: phases on a timeline, milestones, the next step.
+ * The materials (episodes, photos, scripts, links) live in Obsidian.
  * Same spirit as My Life 2036: no scores, no streaks, no red. A quiet project is "resting";
  * a goal that was not reached can be moved or let go.
  */
@@ -8,23 +10,11 @@ import type { Query, Row } from './db';
 
 export const KINDS = ['youtube', 'store', 'life', 'other'] as const;
 export const PROJECT_STATUSES = ['active', 'resting', 'completed', 'archived'] as const;
-export const STAGES = ['idea', 'prep', 'make', 'finish', 'done', 'hold'] as const;
+export const PHASE_STATUSES = ['planned', 'active', 'done', 'paused'] as const;
 export const MILESTONE_STATUSES = ['planned', 'reached', 'dropped'] as const;
 export const PLAN_START_YEAR = 2026;
 export const PLAN_END_YEAR = 2036;
 export const TIMEZONE = 'America/New_York';
-const RECENT_LOG = 30;
-
-export type Kind = (typeof KINDS)[number];
-export type Stage = (typeof STAGES)[number];
-
-// Same words as the screen (components/projectWords.ts), so the log reads like the board.
-export const STAGE_NAMES: Record<Kind, Record<Stage, string>> = {
-  youtube: { idea: '아이디어', prep: '대본', make: '제작', finish: '편집·검토', done: '업로드 완료', hold: '보류' },
-  store: { idea: '아이디어', prep: '기획', make: '제작', finish: '검토', done: '게시 완료', hold: '보류' },
-  life: { idea: '아이디어', prep: '준비', make: '진행', finish: '마무리', done: '완료', hold: '보류' },
-  other: { idea: '아이디어', prep: '준비', make: '제작', finish: '마무리', done: '완료', hold: '보류' },
-};
 
 export class AppError extends Error {
   constructor(
@@ -139,13 +129,21 @@ export async function updateProject(q: Query, id: string, fields: Record<string,
   return 'updated';
 }
 
-const ITEM_COLUMNS = 'id,title,series,stage,due_on,done_on,link,note,sort_order';
+function parseMonth(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) throw invalid(`${field} must be YYYY-MM`);
+  const year = Number(value.slice(0, 4));
+  if (year < PLAN_START_YEAR || year > PLAN_END_YEAR) throw invalid(`${field} must be within ${PLAN_START_YEAR}–${PLAN_END_YEAR}`);
+  return value;
+}
 
-async function items(q: Query, projectId: string): Promise<Row[]> {
+async function phases(q: Query, projectId?: string): Promise<Row[]> {
+  const where = projectId ? 'AND f.project_id=$1' : '';
   return q(
-    `SELECT ${ITEM_COLUMNS} FROM project_items WHERE project_id=$1 AND deleted_at IS NULL
-     ORDER BY (stage='done'), done_on DESC NULLS LAST, sort_order, created_at`,
-    [projectId],
+    `SELECT f.id,f.project_id,p.title AS project_title,p.kind AS project_kind,f.title,f.start_month,f.end_month,f.status,f.goal
+     FROM project_phases f JOIN projects p ON p.id=f.project_id
+     WHERE f.deleted_at IS NULL ${where}
+     ORDER BY f.start_month, f.sort_order, f.created_at`,
+    projectId ? [projectId] : [],
   );
 }
 
@@ -159,26 +157,11 @@ async function milestones(q: Query, projectId?: string): Promise<Row[]> {
   );
 }
 
-async function recentLog(q: Query, projectId: string | null, limit: number): Promise<Row[]> {
-  const where = projectId ? 'WHERE l.project_id=$2' : '';
-  return q(
-    `SELECT l.id,l.project_id,p.title AS project_title,l.item_id,l.logged_on,l.kind,l.text,l.minutes
-     FROM project_log l JOIN projects p ON p.id=l.project_id ${where}
-     ORDER BY l.logged_on DESC, l.id DESC LIMIT $1`,
-    projectId ? [limit, projectId] : [limit],
-  );
-}
-
-async function summary(q: Query, row: Row, today: string) {
-  const list = await items(q, row.id as string);
-  const stageCounts = Object.fromEntries(STAGES.map((s) => [s, 0])) as Record<Stage, number>;
-  for (const item of list) stageCounts[item.stage as Stage] += 1;
-  const doneDays = list.map((i) => i.done_on as string | null).filter((d): d is string => !!d);
-  const [last] = await q('SELECT max(logged_on) AS last FROM project_log WHERE project_id=$1', [row.id]);
-  const [next] = await q(
-    `SELECT id,title,target_on FROM project_milestones WHERE project_id=$1 AND status='planned' ORDER BY target_on LIMIT 1`,
-    [row.id],
-  );
+function card(row: Row, projectPhases: Row[], projectMilestones: Row[], today: string) {
+  const month = today.slice(0, 7);
+  const now = projectPhases.filter((f) => f.status === 'active' || (f.status === 'planned' && (f.start_month as string) <= month && (f.end_month as string) >= month));
+  const next = projectPhases.find((f) => f.status === 'planned' && (f.start_month as string) > month) ?? null;
+  const goal = projectMilestones.find((m) => m.status === 'planned') ?? null;
   return {
     id: row.id,
     title: row.title,
@@ -190,152 +173,91 @@ async function summary(q: Query, row: Row, today: string) {
     next_action: row.next_action,
     vault_note: row.vault_note,
     sort_order: row.sort_order,
-    stage_counts: stageCounts,
-    done_this_month: doneDays.filter((d) => d.startsWith(today.slice(0, 7))).length,
-    done_this_year: doneDays.filter((d) => d.startsWith(today.slice(0, 4))).length,
-    done_total: doneDays.length,
-    last_activity_on: (last?.last as string | null) ?? null,
-    next_milestone: next ?? null,
-    in_progress: list
-      .filter((i) => ['prep', 'make', 'finish'].includes(i.stage as string))
-      .slice(0, 3)
-      .map((i) => ({ id: i.id, title: i.title, stage: i.stage, due_on: i.due_on })),
-    items: list,
+    now_phases: now.map((f) => ({ id: f.id, title: f.title, end_month: f.end_month })),
+    next_phase: next && { id: next.id, title: next.title, start_month: next.start_month },
+    next_milestone: goal && { id: goal.id, title: goal.title, target_on: goal.target_on },
   };
 }
 
-/** Everything for the home screen: cards, the 2026–2036 roadmap, goals and recent work. */
+/** The home screen: where each project stands, the timeline, and the milestones ahead. */
 export async function overview(q: Query, today = localToday()) {
   const rows = await q('SELECT * FROM projects ORDER BY sort_order, created_at');
-  const cards = [];
-  for (const row of rows) {
-    const { items: _items, ...card } = await summary(q, row, today);
-    cards.push(card);
-  }
-  const done: Record<string, Record<string, number>> = {};
-  for (const r of await q(
-    `SELECT project_id, substr(done_on,1,4) AS y, count(*)::int AS n FROM project_items
-     WHERE deleted_at IS NULL AND done_on IS NOT NULL GROUP BY project_id, y`,
-  )) {
-    (done[r.project_id as string] ??= {})[r.y as string] = Number(r.n);
-  }
-  const all = await milestones(q);
-  const years = [];
-  for (let y = PLAN_START_YEAR; y <= PLAN_END_YEAR; y++) years.push(y);
+  const allPhases = await phases(q);
+  const allMilestones = await milestones(q);
   return {
     today,
-    projects: cards,
-    roadmap: { years, done_by_year: done, milestones: all.filter((m) => m.status !== 'dropped') },
-    upcoming_milestones: all.filter((m) => m.status === 'planned').slice(0, 8),
-    recent_log: await recentLog(q, null, 12),
+    projects: rows.map((row) =>
+      card(row, allPhases.filter((f) => f.project_id === row.id), allMilestones.filter((m) => m.project_id === row.id), today),
+    ),
+    phases: allPhases,
+    milestones: allMilestones.filter((m) => m.status !== 'dropped'),
+    upcoming_milestones: allMilestones.filter((m) => m.status === 'planned').slice(0, 8),
   };
 }
 
 export async function getProject(q: Query, id: string, today = localToday()) {
   const row = await projectRow(q, id);
-  return { ...(await summary(q, row, today)), today, milestones: await milestones(q, id), log: await recentLog(q, id, RECENT_LOG) };
+  const projectPhases = await phases(q, id);
+  const projectMilestones = await milestones(q, id);
+  return { ...card(row, projectPhases, projectMilestones, today), today, phases: projectPhases, milestones: projectMilestones };
 }
 
-// ---------------- work items ----------------
+// ---------------- phases ----------------
 
-const ITEM_FIELDS = ['title', 'series', 'stage', 'due_on', 'done_on', 'link', 'note', 'sort_order'];
+const PHASE_FIELDS = ['title', 'start_month', 'end_month', 'status', 'goal', 'sort_order'];
 
-export async function createItem(q: Query, projectId: string, input: Record<string, unknown>, today = localToday()): Promise<string> {
-  rejectUnknown(input, ITEM_FIELDS, 'item');
+export async function createPhase(q: Query, projectId: string, input: Record<string, unknown>): Promise<string> {
+  rejectUnknown(input, PHASE_FIELDS, 'phase');
   await projectRow(q, projectId);
-  const stage = oneOf(input.stage ?? 'idea', STAGES, 'stage');
-  let doneOn = dayOrNull(input.done_on, 'done_on');
-  if (stage === 'done') doneOn = doneOn ?? today;
-  else if (doneOn !== null) throw invalid('done_on is only for finished work');
-  notFuture(doneOn, today, 'done_on');
-  const name = title(input.title);
+  const start = parseMonth(input.start_month, 'start_month');
+  const end = input.end_month === undefined || input.end_month === null ? start : parseMonth(input.end_month, 'end_month');
+  if (end < start) throw invalid('end_month must not be before start_month');
   const id = randomUUID();
-  // One statement, so the item and its log line are saved together or not at all.
   await q(
-    `WITH item AS (
-       INSERT INTO project_items(id,project_id,title,series,stage,due_on,done_on,link,note,sort_order)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id)
-     INSERT INTO project_log(project_id,item_id,logged_on,kind,text) SELECT $2, id, $11, 'created', $12 FROM item`,
+    'INSERT INTO project_phases(id,project_id,title,start_month,end_month,status,goal,sort_order) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
     [
       id,
       projectId,
-      name,
-      clean(input.series),
-      stage,
-      dayOrNull(input.due_on, 'due_on'),
-      doneOn,
-      clean(input.link),
-      clean(input.note),
+      title(input.title),
+      start,
+      end,
+      oneOf(input.status ?? 'planned', PHASE_STATUSES, 'phase status'),
+      clean(input.goal),
       input.sort_order === undefined ? 0 : wholeNumber(input.sort_order, 'sort_order'),
-      doneOn ?? today,
-      stage === 'done' ? `완료로 등록: ${name}` : `새 작업: ${name}`,
     ],
   );
   return id;
 }
 
-/**
- * Change only the fields given; null clears an optional field.
- * Moving to 'done' dates it today unless done_on is given; leaving 'done' clears the date.
- * A stage change writes one line to the project log.
- */
-export async function updateItem(q: Query, id: string, fields: Record<string, unknown>, today = localToday()) {
-  rejectUnknown(fields, ITEM_FIELDS, 'item');
-  const [row] = await q(
-    `SELECT i.*, p.kind FROM project_items i JOIN projects p ON p.id=i.project_id WHERE i.id=$1 AND i.deleted_at IS NULL`,
-    [id],
-  );
-  if (!row) throw notFound('item');
+/** Change only the fields given; null clears the goal. */
+export async function updatePhase(q: Query, id: string, fields: Record<string, unknown>) {
+  rejectUnknown(fields, PHASE_FIELDS, 'phase');
+  const [row] = await q('SELECT * FROM project_phases WHERE id=$1 AND deleted_at IS NULL', [id]);
+  if (!row) throw notFound('phase');
   const next: Record<string, unknown> = { ...row };
   for (const [key, raw] of Object.entries(fields)) {
     if (key === 'title') next.title = title(raw);
-    else if (key === 'stage') next.stage = oneOf(raw, STAGES, 'stage');
-    else if (key === 'due_on' || key === 'done_on') next[key] = dayOrNull(raw, key);
+    else if (key === 'start_month' || key === 'end_month') next[key] = parseMonth(raw, key);
+    else if (key === 'status') next.status = oneOf(raw, PHASE_STATUSES, 'phase status');
     else if (key === 'sort_order') next.sort_order = wholeNumber(raw, 'sort_order');
-    else next[key] = clean(raw);
+    else next.goal = clean(raw);
   }
-  if (next.stage === 'done') next.done_on = next.done_on ?? today;
-  else if (fields.done_on !== undefined && fields.done_on !== null) throw invalid('done_on is only for finished work');
-  else next.done_on = null;
-  notFuture(next.done_on as string | null, today, 'done_on');
-
-  const changed = ITEM_FIELDS.filter((k) => next[k] !== row[k]);
-  if (!changed.length) return 'unchanged' as const;
-  const values = changed.map((k) => next[k]);
-  const set = changed.map((k, i) => `${k}=$${i + 2}`).join(',');
-  if (changed.includes('stage')) {
-    const names = STAGE_NAMES[row.kind as Kind];
-    const n = changed.length + 2;
-    await q(
-      `WITH item AS (UPDATE project_items SET ${set}, updated_at=now() WHERE id=$1 RETURNING project_id)
-       INSERT INTO project_log(project_id,item_id,logged_on,kind,text) SELECT project_id, $1, $${n}, 'stage', $${n + 1} FROM item`,
-      [
-        id,
-        ...values,
-        (next.done_on as string | null) ?? today,
-        `${next.title}: ${names[row.stage as Stage]} → ${names[next.stage as Stage]}`,
-      ],
-    );
-  } else {
-    await q(`UPDATE project_items SET ${set}, updated_at=now() WHERE id=$1`, [id, ...values]);
-  }
+  if ((next.end_month as string) < (next.start_month as string)) throw invalid('end_month must not be before start_month');
+  const keys = PHASE_FIELDS.filter((k) => next[k] !== row[k]);
+  if (!keys.length) return 'unchanged' as const;
+  await q(`UPDATE project_phases SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')}, updated_at=now() WHERE id=$1`, [
+    id,
+    ...keys.map((k) => next[k]),
+  ]);
   return 'updated' as const;
 }
 
-/** Soft delete: the row and its log lines stay in the database and the export. */
-export async function deleteItem(q: Query, id: string): Promise<boolean> {
-  const [row] = await q('SELECT deleted_at FROM project_items WHERE id=$1', [id]);
-  if (!row) throw notFound('item');
+/** Soft delete: the row stays in the database and the backup export. */
+export async function deletePhase(q: Query, id: string): Promise<boolean> {
+  const [row] = await q('SELECT deleted_at FROM project_phases WHERE id=$1', [id]);
+  if (!row) throw notFound('phase');
   if (row.deleted_at !== null) return false;
-  await q('UPDATE project_items SET deleted_at=now(), updated_at=now() WHERE id=$1', [id]);
-  return true;
-}
-
-export async function restoreItem(q: Query, id: string): Promise<boolean> {
-  const [row] = await q('SELECT deleted_at FROM project_items WHERE id=$1', [id]);
-  if (!row) throw notFound('item');
-  if (row.deleted_at === null) return false;
-  await q('UPDATE project_items SET deleted_at=NULL, updated_at=now() WHERE id=$1', [id]);
+  await q('UPDATE project_phases SET deleted_at=now(), updated_at=now() WHERE id=$1', [id]);
   return true;
 }
 
@@ -379,44 +301,17 @@ export async function updateMilestone(q: Query, id: string, fields: Record<strin
   notFuture(next.reached_on as string | null, today, 'reached_on');
   const keys = ['title', 'target_on', 'status', 'reached_on', 'note'].filter((k) => next[k] !== row[k]);
   if (!keys.length) return 'unchanged' as const;
-  const set = keys.map((k, i) => `${k}=$${i + 2}`).join(',');
-  const values = keys.map((k) => next[k]);
-  if (keys.includes('status') && next.status === 'reached') {
-    const n = keys.length + 2;
-    await q(
-      `WITH m AS (UPDATE project_milestones SET ${set}, updated_at=now() WHERE id=$1 RETURNING project_id)
-       INSERT INTO project_log(project_id,logged_on,kind,text) SELECT project_id, $${n}, 'milestone', $${n + 1} FROM m`,
-      [id, ...values, next.reached_on, `목표 달성: ${next.title}`],
-    );
-  } else {
-    await q(`UPDATE project_milestones SET ${set}, updated_at=now() WHERE id=$1`, [id, ...values]);
-  }
+  await q(`UPDATE project_milestones SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')}, updated_at=now() WHERE id=$1`, [
+    id,
+    ...keys.map((k) => next[k]),
+  ]);
   return 'updated' as const;
 }
 
-// ---------------- work log ----------------
-
-export async function addLog(q: Query, projectId: string, input: Record<string, unknown>, today = localToday()): Promise<number> {
-  rejectUnknown(input, ['text', 'logged_on', 'minutes'], 'log');
-  await projectRow(q, projectId);
-  const day = input.logged_on === undefined || input.logged_on === null ? today : parseDay(input.logged_on, 'logged_on');
-  notFuture(day, today, 'logged_on');
-  let minutes: number | null = null;
-  if (input.minutes !== undefined && input.minutes !== null) {
-    minutes = wholeNumber(input.minutes, 'minutes');
-    if (minutes < 0) throw invalid('invalid minutes');
-  }
-  const [row] = await q(
-    `INSERT INTO project_log(project_id,logged_on,kind,text,minutes) VALUES($1,$2,'note',$3,$4) RETURNING id`,
-    [projectId, day, title(input.text), minutes],
-  );
-  return Number(row.id);
-}
-
-/** Every row, including deleted items, as a backup the owner can keep anywhere. */
+/** Every row, including deleted phases and the first version's items and log, as a backup. */
 export async function exportAll(q: Query) {
   const tables: Record<string, Row[]> = {};
-  for (const t of ['projects', 'project_items', 'project_milestones', 'project_log']) {
+  for (const t of ['projects', 'project_phases', 'project_milestones', 'project_items', 'project_log']) {
     tables[t] = await q(`SELECT * FROM ${t} ORDER BY created_at`);
   }
   return { app: 'mylife2036-projects', exported_at: new Date().toISOString(), tables };

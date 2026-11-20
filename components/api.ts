@@ -38,7 +38,7 @@ export function messageOf(problem: unknown): string {
 
 export type ProjectKind = 'youtube' | 'store' | 'life' | 'other';
 export type ProjectStatus = 'active' | 'resting' | 'completed' | 'archived';
-export type Stage = 'idea' | 'prep' | 'make' | 'finish' | 'done' | 'hold';
+export type PhaseStatus = 'planned' | 'active' | 'done' | 'paused';
 export type MilestoneStatus = 'planned' | 'reached' | 'dropped';
 
 export interface ProjectFields {
@@ -55,25 +55,21 @@ export interface ProjectCard extends ProjectFields {
   id: string;
   status: ProjectStatus;
   sort_order: number;
-  stage_counts: Record<Stage, number>;
-  done_this_month: number;
-  done_this_year: number;
-  done_total: number;
-  last_activity_on: string | null;
+  now_phases: { id: string; title: string; end_month: string }[];
+  next_phase: { id: string; title: string; start_month: string } | null;
   next_milestone: { id: string; title: string; target_on: string } | null;
-  in_progress: { id: string; title: string; stage: Stage; due_on: string | null }[];
 }
 
-export interface WorkItem {
+export interface Phase {
   id: string;
+  project_id: string;
+  project_title: string;
+  project_kind: ProjectKind;
   title: string;
-  series: string | null;
-  stage: Stage;
-  due_on: string | null;
-  done_on: string | null;
-  link: string | null;
-  note: string | null;
-  sort_order: number;
+  start_month: string;
+  end_month: string;
+  status: PhaseStatus;
+  goal: string | null;
 }
 
 export interface Milestone {
@@ -87,40 +83,26 @@ export interface Milestone {
   note: string | null;
 }
 
-export interface LogLine {
-  id: number;
-  project_id: string;
-  project_title: string;
-  item_id: string | null;
-  logged_on: string;
-  kind: 'note' | 'created' | 'stage' | 'milestone';
-  text: string;
-  minutes: number | null;
-}
-
 export interface ProjectOverview {
   today: string;
   projects: ProjectCard[];
-  roadmap: { years: number[]; done_by_year: Record<string, Record<string, number>>; milestones: Milestone[] };
+  phases: Phase[];
+  milestones: Milestone[];
   upcoming_milestones: Milestone[];
-  recent_log: LogLine[];
 }
 
 export interface ProjectDetail extends ProjectCard {
   today: string;
-  items: WorkItem[];
+  phases: Phase[];
   milestones: Milestone[];
-  log: LogLine[];
 }
 
-export interface NewItem {
+export interface NewPhase {
   title: string;
-  stage?: Stage;
-  series?: string | null;
-  due_on?: string | null;
-  done_on?: string | null;
-  link?: string | null;
-  note?: string | null;
+  start_month: string;
+  end_month: string;
+  status?: PhaseStatus;
+  goal?: string | null;
 }
 
 export const projectApi = {
@@ -128,16 +110,13 @@ export const projectApi = {
   detail: (id: string) => request<ProjectDetail>('GET', `/projects/${id}`),
   create: (fields: ProjectFields & { sort_order?: number }) => request<{ id: string }>('POST', '/projects', fields),
   update: (id: string, fields: Partial<ProjectFields & { status: ProjectStatus }>) => request<unknown>('PATCH', `/projects/${id}`, fields),
-  addItem: (projectId: string, item: NewItem) => request<{ id: string }>('POST', `/projects/${projectId}/items`, item),
-  updateItem: (id: string, fields: Partial<Omit<WorkItem, 'id'>>) => request<unknown>('PATCH', `/items/${id}`, fields),
-  deleteItem: (id: string) => request<void>('DELETE', `/items/${id}`),
-  restoreItem: (id: string) => request<unknown>('POST', `/items/${id}/restore`),
+  addPhase: (projectId: string, phase: NewPhase) => request<{ id: string }>('POST', `/projects/${projectId}/phases`, phase),
+  updatePhase: (id: string, fields: Partial<NewPhase>) => request<unknown>('PATCH', `/phases/${id}`, fields),
+  deletePhase: (id: string) => request<void>('DELETE', `/phases/${id}`),
   addMilestone: (projectId: string, title: string, target_on: string) =>
     request<{ id: string }>('POST', `/projects/${projectId}/milestones`, { title, target_on }),
   updateMilestone: (id: string, fields: Partial<Pick<Milestone, 'title' | 'target_on' | 'status' | 'note'>>) =>
     request<unknown>('PATCH', `/milestones/${id}`, fields),
-  addLog: (projectId: string, text: string, minutes: number | null, logged_on?: string) =>
-    request<unknown>('POST', `/projects/${projectId}/log`, { text, minutes, ...(logged_on ? { logged_on } : {}) }),
   exportAll: () => request<unknown>('GET', '/export'),
   logout: () => request<unknown>('POST', '/logout'),
 };

@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS projects (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- project_items and project_log: the first version's episode-level work items and work log.
+-- No longer shown (the site plans the flow only); kept so old data stays in the backup export.
 CREATE TABLE IF NOT EXISTS project_items (
   id text PRIMARY KEY,
   project_id text NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
@@ -61,4 +63,22 @@ CREATE TABLE IF NOT EXISTS project_log (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_project_log_project ON project_log(project_id, logged_on);
+
+-- One stretch of work on the timeline: "EP002~EP010 제작기", "메뉴 사진 리뉴얼".
+-- Months are 'YYYY-MM'. The materials themselves live in Obsidian, not here.
+CREATE TABLE IF NOT EXISTS project_phases (
+  id text PRIMARY KEY,
+  project_id text NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  title text NOT NULL CHECK (length(trim(title)) > 0),
+  start_month text NOT NULL CHECK (start_month ~ '^\d{4}-(0[1-9]|1[0-2])$'),
+  end_month text NOT NULL CHECK (end_month ~ '^\d{4}-(0[1-9]|1[0-2])$'),
+  status text NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','active','done','paused')),
+  goal text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz,
+  CHECK (end_month >= start_month)
+);
+CREATE INDEX IF NOT EXISTS idx_project_phases_project ON project_phases(project_id, start_month);
 `;
