@@ -1,16 +1,17 @@
 import { PGlite } from '@electric-sql/pglite';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ensureSchema, type Query, type Row } from '@/lib/db';
+import { ensureSchema, pgliteDatabase, type Database, type Query, type Row } from '@/lib/db';
 import * as pj from '@/lib/projects';
 import { makeSession, passwordMatches, validSession } from '@/lib/auth';
 
 const TODAY = '2026-11-20';
 let q: Query;
+let database: Database;
 let p: string;
 
 beforeEach(async () => {
-  const db = new PGlite();
-  q = async (text, params = []) => (await db.query<Row>(text, params)).rows;
+  database = pgliteDatabase(new PGlite());
+  q = database.query;
   await ensureSchema(q);
   await ensureSchema(q); // running it twice (every server start) changes nothing
   p = await pj.createProject(q, { title: '규영, 책에게 묻다', kind: 'youtube', summary: '책 한 권 + 질문', next_action: 'EP002 책 고르기' });
@@ -131,7 +132,7 @@ describe('procedure and projects', () => {
     await expect(pj.createSubproject(q, 'missing', { title: 'x' }, TODAY)).rejects.toMatchObject({ status: 404 });
     const s = await pj.createSubproject(q, p, { title: '오늘 시작' }, TODAY);
     expect((await pj.getSubproject(q, s, TODAY)).start_on).toBe(TODAY);
-    expect(await pj.updateSubproject(q, s, { status: 'done' }, TODAY)).toBe('updated');
+    expect(await pj.updateSubproject(q, s, { status: 'done' }, TODAY)).toBe('updated'); // no steps: chosen by hand
     expect((await pj.getSubproject(q, s, TODAY)).done_on).toBe(TODAY);
     expect(await pj.deleteSubproject(q, s)).toBe(true);
     await expect(pj.getSubproject(q, s, TODAY)).rejects.toMatchObject({ status: 404 });
@@ -204,6 +205,107 @@ describe('backup', () => {
     expect(data.tables.projects).toHaveLength(1);
     await pj.createSubproject(q, p, { title: '하위', start_on: '2027-01-01' }, TODAY);
     await expect(q('DELETE FROM projects WHERE id=$1', [p])).rejects.toThrow(); // a top project with projects is never hard-deleted
+  });
+});
+
+describe('review fixes 2026-11-21', () => {
+  const steps = async (s: string) => (await pj.getSubproject(q, s, TODAY)).steps;
+
+  it('a project with steps cannot be marked done by hand while steps remain; a note edit keeps its status', async () => {
+    await pj.setProcedure(q, p, PROC);
+    const s = await pj.createSubproject(q, p, { title: 'EP002', start_on: '2026-11-20' }, TODAY);
+    await expect(pj.updateSubproject(q, s, { status: 'done' }, TODAY)).rejects.toThrow('남은 단계');
+    const ids = (await steps(s)).map((x) => x.id as string);
+    for (const id of ids) await pj.updateStep(q, id, { status: 'done' }, TODAY);
+    expect((await pj.getSubproject(q, s, TODAY)).status).toBe('done');
+    await pj.updateStep(q, ids[0], { note: '메모만' }, TODAY);
+    expect((await pj.getSubproject(q, s, TODAY)).status).toBe('done');
+    await expect(pj.updateSubproject(q, s, { status: 'active' }, TODAY)).rejects.toThrow('다시 여세요');
+    // marking 'planned' while work has started becomes 'active'
+    await pj.updateStep(q, ids[4], { status: 'todo' }, TODAY);
+    await pj.updateSubproject(q, s, { status: 'planned' }, TODAY);
+    expect((await pj.getSubproject(q, s, TODAY)).status).toBe('active');
+  });
+
+  it('resuming a paused project whose steps were all finished lands on done, at 100%', async () => {
+    await pj.setProcedure(q, p, PROC);
+    const s = await pj.createSubproject(q, p, { title: '쉬다 끝냄', start_on: '2026-11-20' }, TODAY);
+    await pj.updateSubproject(q, s, { status: 'paused' }, TODAY);
+    for (const st of await steps(s)) await pj.updateStep(q, st.id as string, { status: 'done' }, TODAY);
+    expect((await pj.getSubproject(q, s, TODAY)).status).toBe('paused');
+    await pj.updateSubproject(q, s, { status: 'active' }, TODAY);
+    const got = await pj.getSubproject(q, s, TODAY);
+    expect([got.status, got.percent, got.done_on]).toEqual(['done', 100, TODAY]);
+  });
+
+  it('two simultaneous "apply procedure" clicks add the steps once', async () => {
+    await pj.setProcedure(q, p, PROC);
+    const s = await pj.createSubproject(q, p, { title: '동시', start_on: '2026-12-01', use_procedure: false }, TODAY);
+    const results = await Promise.allSettled([
+      database.transaction((t) => pj.applyProcedure(t, s, TODAY)),
+      database.transaction((t) => pj.applyProcedure(t, s, TODAY)),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect(await steps(s)).toHaveLength(PROC.length);
+  });
+
+  it('a failure halfway through moving steps saves nothing, and a retry moves them all', async () => {
+    await pj.setProcedure(q, p, PROC);
+    const s = await pj.createSubproject(q, p, { title: '실패', start_on: '2026-12-01' }, TODAY);
+    const before = await steps(s);
+    let writes = 0;
+    const failing = (t: Query): Query => async (text, params) => {
+      if (/^\s*UPDATE subproject_steps/.test(text) && ++writes === 2) throw new Error('connection lost');
+      return t(text, params);
+    };
+    const move = { end_on: '2026-12-07', shift_following: true };
+    await expect(database.transaction((t) => pj.updateStep(failing(t), before[1].id as string, move, TODAY))).rejects.toThrow('connection lost');
+    expect((await steps(s)).map((x) => x.end_on)).toEqual(before.map((x) => x.end_on));
+    await database.transaction((t) => pj.updateStep(t, before[1].id as string, move, TODAY));
+    expect((await steps(s)).map((x) => x.end_on)).toEqual(['2026-12-02', '2026-12-07', '2026-12-09', '2026-12-10', '2026-12-11']);
+  });
+
+  it('moving the project start can move its unfinished steps and target date with it', async () => {
+    await pj.setProcedure(q, p, PROC);
+    const s = await pj.createSubproject(q, p, { title: '미루기', start_on: '2026-12-01' }, TODAY);
+    const first = (await steps(s))[0].id as string;
+    await pj.updateStep(q, first, { status: 'done' }, TODAY);
+    await pj.updateSubproject(q, s, { start_on: '2027-01-05', shift_steps: true }, TODAY);
+    let got = await pj.getSubproject(q, s, TODAY);
+    expect([got.start_on, got.due_on]).toEqual(['2027-01-05', '2027-01-13']); // 9-day target moved by 35 days
+    expect(got.steps.map((x) => x.start_on)).toEqual(['2026-12-01', '2027-01-07', '2027-01-10', '2027-01-12', '2027-01-13']);
+    // without moving the steps, the project's own timeline still covers them
+    await pj.updateSubproject(q, s, { start_on: '2027-03-01', due_on: '2027-03-10' }, TODAY);
+    got = await pj.getSubproject(q, s, TODAY);
+    expect([got.span_start, got.span_end]).toEqual(['2026-12-01', '2027-03-10']);
+  });
+
+  it('the forecast comes from remaining steps: skipped late steps do not make the project late', async () => {
+    await pj.setProcedure(q, p, PROC);
+    const s = await pj.createSubproject(q, p, { title: '예측', start_on: '2026-12-01', due_on: '2026-12-04' }, TODAY);
+    let got = await pj.getSubproject(q, s, TODAY);
+    expect([got.forecast_on, got.late]).toEqual(['2026-12-09', true]);
+    for (const st of got.steps.slice(1)) await pj.updateStep(q, st.id as string, { status: 'skipped' }, TODAY);
+    got = await pj.getSubproject(q, s, TODAY);
+    expect([got.forecast_on, got.late, got.end_on]).toEqual(['2026-12-02', false, '2026-12-04']);
+  });
+
+  it('one date rule for calculated and typed dates; editing a name never trips over dates', async () => {
+    await pj.setProcedure(q, p, PROC);
+    await expect(pj.createSubproject(q, p, { title: '너무 늦게', start_on: '2036-12-28' }, TODAY)).rejects.toThrow('2036-12-31');
+    const s = await pj.createSubproject(q, p, { title: '연말', start_on: '2036-12-20' }, TODAY);
+    const st = (await steps(s))[4];
+    expect(await pj.updateStep(q, st.id as string, { title: '새 이름', start_on: st.start_on, end_on: st.end_on }, TODAY)).toBe('updated');
+    await expect(pj.updateStep(q, (await steps(s))[0].id as string, { end_on: '2036-12-30', shift_following: true }, TODAY)).rejects.toThrow('옮긴 단계');
+  });
+
+  it('upcoming milestones are today or later; slipped ones are listed apart', async () => {
+    for (let i = 1; i <= 9; i++) await pj.createMilestone(q, p, { title: `지난 ${i}`, target_on: `2026-11-0${i}` });
+    await pj.createMilestone(q, p, { title: '내일', target_on: '2026-11-21' });
+    const o = await pj.overview(q, TODAY);
+    expect(o.upcoming_milestones.map((m) => m.title)).toEqual(['내일']);
+    expect(o.overdue_milestones).toHaveLength(9);
+    expect(o.projects[0].next_milestone?.title).toBe('내일');
   });
 });
 

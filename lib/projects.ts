@@ -138,13 +138,22 @@ export async function updateProject(q: Query, id: string, fields: Record<string,
 const DAY = 86_400_000;
 export const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / DAY;
 export const addDays = (day: string, n: number) => new Date((dayNumber(day) + n) * DAY).toISOString().slice(0, 10);
+export const PLAN_FIRST_DAY = `${PLAN_START_YEAR}-01-01`;
+export const PLAN_LAST_DAY = `${PLAN_END_YEAR}-12-31`;
 
-function planDate(value: unknown, field: string): string {
-  const day = parseDay(value, field);
-  const year = Number(day.slice(0, 4));
-  if (year < PLAN_START_YEAR || year > PLAN_END_YEAR) throw invalid(`${field} must be within ${PLAN_START_YEAR}–${PLAN_END_YEAR}`);
+/** The one date rule for everything planned here, typed in or calculated: 2026-01-01 … 2036-12-31. */
+function inPlan(day: string, field: string): string {
+  if (day < PLAN_FIRST_DAY || day > PLAN_LAST_DAY) {
+    throw invalid(`${field}: 날짜는 ${PLAN_FIRST_DAY}부터 ${PLAN_LAST_DAY} 사이여야 합니다.`);
+  }
   return day;
 }
+
+function planDate(value: unknown, field: string): string {
+  return inPlan(parseDay(value, field), field);
+}
+
+const later = (a: string, b: string) => (a > b ? a : b);
 
 // ---------------- procedure (the top project's standard steps) ----------------
 
@@ -182,6 +191,16 @@ async function subRow(q: Query, id: string): Promise<Row> {
   return row;
 }
 
+/**
+ * Every change to a project or its steps first locks the project's row, so two changes to the
+ * same project (two clicks, two tabs) run one after the other inside their transactions.
+ */
+async function lockSub(q: Query, id: string): Promise<Row> {
+  const [row] = await q('SELECT * FROM subprojects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [id]);
+  if (!row) throw notFound('subproject');
+  return row;
+}
+
 async function stepsOf(q: Query, subIds: string[]): Promise<Map<string, Row[]>> {
   const map = new Map<string, Row[]>(subIds.map((id) => [id, []]));
   if (!subIds.length) return map;
@@ -207,16 +226,48 @@ function progress(steps: Row[]) {
   };
 }
 
+/**
+ * What the steps say about the project: 'done' when every counted step is done, 'active' once one
+ * has started, 'planned' before that. null when there are no counted steps (then status is by hand).
+ */
+function fromSteps(steps: Row[]): 'planned' | 'active' | 'done' | null {
+  const counted = steps.filter((s) => s.status !== 'skipped');
+  if (!counted.length) return null;
+  if (counted.every((s) => s.status === 'done')) return 'done';
+  return counted.some((s) => s.status === 'doing' || s.status === 'done') ? 'active' : 'planned';
+}
+
+function lastDoneOn(steps: Row[]): string | null {
+  return steps.reduce<string | null>((m, s) => (s.done_on && (!m || (s.done_on as string) > m) ? (s.done_on as string) : m), null);
+}
+
 function subView(row: Row, steps: Row[]) {
-  const lastEnd = steps.reduce((m, s) => ((s.end_on as string) > m ? (s.end_on as string) : m), row.due_on as string);
+  const due = row.due_on as string;
+  const start = row.start_on as string;
+  // Forecast from the work that is left: skipped and finished steps do not push it later.
+  const remaining = steps.filter((s) => s.status === 'todo' || s.status === 'doing');
+  const forecast =
+    row.status === 'done'
+      ? (row.done_on as string)
+      : remaining.length
+        ? remaining.reduce((m, s) => later(m, s.end_on as string), remaining[0].end_on as string)
+        : due;
+  const scheduled = steps.length ? steps.reduce((m, s) => later(m, s.end_on as string), start) : start;
+  const firstStep = steps.length ? steps.reduce((m, s) => ((s.start_on as string) < m ? (s.start_on as string) : m), start) : start;
   return {
     id: row.id,
     project_id: row.project_id,
     title: row.title,
     status: row.status,
-    start_on: row.start_on as string,
-    due_on: row.due_on as string,
-    end_on: lastEnd, // where the bar ends: the target date or a later scheduled step
+    start_on: start,
+    due_on: due, // the target the owner set
+    forecast_on: forecast, // when it will likely finish, from the remaining steps
+    late: row.status !== 'done' && forecast > due,
+    // where the bar runs on the long timelines
+    end_on: row.status === 'done' ? later(start, row.done_on as string) : later(due, forecast),
+    // the span the project's own timeline must show, so no step falls outside it
+    span_start: firstStep,
+    span_end: later(later(due, forecast), scheduled),
     done_on: row.done_on,
     vault_note: row.vault_note,
     sort_order: row.sort_order,
@@ -236,12 +287,15 @@ async function subprojectsOf(q: Query, projectId?: string) {
 
 function scheduleFrom(start: string, procedure: Row[]) {
   let cursor = start;
-  return procedure.map((p, i) => {
+  const steps = procedure.map((p, i) => {
     const s = cursor;
     const e = addDays(s, Number(p.days) - 1);
     cursor = addDays(e, 1);
     return { position: i + 1, title: p.title as string, start_on: s, end_on: e };
   });
+  // Calculated dates follow the same rule as typed ones, so every step stays editable.
+  if (steps.length) inPlan(steps[steps.length - 1].end_on, '절차 일정의 끝');
+  return steps;
 }
 
 async function insertSteps(q: Query, subId: string, steps: { position: number; title: string; start_on: string; end_on: string }[]) {
@@ -251,6 +305,28 @@ async function insertSteps(q: Query, subId: string, steps: { position: number; t
      SELECT gen_random_uuid()::text, $1, u.position, u.title, u.s, u.e
      FROM unnest($2::int[], $3::text[], $4::text[], $5::text[]) AS u(position,title,s,e)`,
     [subId, steps.map((x) => x.position), steps.map((x) => x.title), steps.map((x) => x.start_on), steps.map((x) => x.end_on)],
+  );
+}
+
+/**
+ * Move the unfinished steps of a project by `delta` days, optionally only those after `afterPosition`.
+ * The new dates are checked against the plan's date rule before anything is written.
+ */
+async function shiftSteps(q: Query, subId: string, delta: number, afterPosition = 0) {
+  if (delta === 0) return;
+  const [span] = await q(
+    `SELECT min(start_on) AS s, max(end_on) AS e FROM subproject_steps
+     WHERE subproject_id=$1 AND position>$2 AND deleted_at IS NULL AND status<>'done'`,
+    [subId, afterPosition],
+  );
+  if (!span?.s) return;
+  inPlan(addDays(span.s as string, delta), '옮긴 단계의 시작');
+  inPlan(addDays(span.e as string, delta), '옮긴 단계의 끝');
+  await q(
+    `UPDATE subproject_steps SET start_on=to_char(start_on::date + $3::int, 'YYYY-MM-DD'),
+       end_on=to_char(end_on::date + $3::int, 'YYYY-MM-DD'), updated_at=now()
+     WHERE subproject_id=$1 AND position>$2 AND deleted_at IS NULL AND status<>'done'`,
+    [subId, afterPosition, delta],
   );
 }
 
@@ -279,31 +355,58 @@ export async function createSubproject(q: Query, projectId: string, input: Recor
 }
 
 /** Add the procedure's steps to a project that has none yet (e.g. one made before the procedure). */
-export async function applyProcedure(q: Query, subId: string) {
-  const sub = await subRow(q, subId);
+export async function applyProcedure(q: Query, subId: string, today = localToday()) {
+  const sub = await lockSub(q, subId); // a second, simultaneous click waits here and then finds the steps
   const [{ n }] = await q('SELECT count(*)::int AS n FROM subproject_steps WHERE subproject_id=$1 AND deleted_at IS NULL', [subId]);
   if (Number(n) > 0) throw invalid('this project already has steps');
   const steps = scheduleFrom(sub.start_on as string, await getProcedure(q, sub.project_id as string));
   if (!steps.length) throw invalid('the top project has no procedure yet');
   await insertSteps(q, subId, steps);
+  await syncStatus(q, subId, today);
   return steps.length;
 }
 
+const NOT_ALL_DONE = '남은 단계를 완료하거나 건너뛰어야 마침으로 바꿀 수 있습니다.';
+const STILL_ALL_DONE = '모든 단계가 끝난 프로젝트입니다. 다시 진행하려면 단계 하나를 다시 여세요.';
+
+/**
+ * Change only the fields given. A project with steps takes its status from them; only 'paused'
+ * is chosen freely. With shift_steps, moving the start date moves its unfinished steps (and the
+ * target date, unless one is given) by the same number of days.
+ */
 export async function updateSubproject(q: Query, id: string, fields: Record<string, unknown>, today = localToday()) {
-  rejectUnknown(fields, ['title', 'status', 'start_on', 'due_on', 'vault_note', 'sort_order'], 'subproject');
-  const row = await subRow(q, id);
+  rejectUnknown(fields, ['title', 'status', 'start_on', 'due_on', 'vault_note', 'sort_order', 'shift_steps'], 'subproject');
+  const row = await lockSub(q, id);
+  const steps = (await stepsOf(q, [id])).get(id)!;
   const next: Record<string, unknown> = { ...row };
   for (const [key, raw] of Object.entries(fields)) {
+    if (key === 'shift_steps') continue;
     if (key === 'title') next.title = title(raw);
     else if (key === 'status') next.status = oneOf(raw, SUB_STATUSES, 'subproject status');
     else if (key === 'start_on' || key === 'due_on') next[key] = planDate(raw, key);
     else if (key === 'sort_order') next.sort_order = wholeNumber(raw, 'sort_order');
     else next.vault_note = clean(raw);
   }
+  const delta = dayNumber(next.start_on as string) - dayNumber(row.start_on as string);
+  const shift = fields.shift_steps === true && delta !== 0;
+  if (shift && fields.due_on === undefined) next.due_on = inPlan(addDays(row.due_on as string, delta), 'due_on');
   if ((next.due_on as string) < (next.start_on as string)) throw invalid('due_on must not be before start_on');
-  next.done_on = next.status === 'done' ? (row.done_on ?? today) : null;
+
+  const derived = fromSteps(steps);
+  if ('status' in fields && derived !== null && next.status !== 'paused') {
+    if (next.status === 'done' && derived !== 'done') throw invalid(NOT_ALL_DONE);
+    if (next.status !== 'done' && derived === 'done') {
+      // Resuming a paused project whose steps were all finished meanwhile lands on 'done'.
+      if (row.status !== 'paused') throw invalid(STILL_ALL_DONE);
+      next.status = 'done';
+    }
+    if (derived === 'active') next.status = 'active'; // work has started, whatever 'planned' says
+  }
+  next.done_on = next.status === 'done' ? (row.done_on ?? lastDoneOn(steps) ?? today) : null;
+
   const keys = ['title', 'status', 'start_on', 'due_on', 'done_on', 'vault_note', 'sort_order'].filter((k) => next[k] !== row[k]);
-  if (!keys.length) return 'unchanged' as const;
+  if (shift) await shiftSteps(q, id, delta);
+  if (!keys.length) return shift ? ('updated' as const) : ('unchanged' as const);
   await q(`UPDATE subprojects SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')}, updated_at=now() WHERE id=$1`, [
     id,
     ...keys.map((k) => next[k]),
@@ -326,7 +429,7 @@ export async function getSubproject(q: Query, id: string, today = localToday()) 
   const steps = (await stepsOf(q, [id])).get(id)!;
   const view = subView(row, steps);
   const marks = (await milestones(q, top.id as string)).filter(
-    (m) => m.status !== 'dropped' && (m.target_on as string) >= view.start_on && (m.target_on as string) <= view.end_on,
+    (m) => m.status !== 'dropped' && (m.target_on as string) >= view.span_start && (m.target_on as string) <= view.span_end,
   );
   return {
     ...view,
@@ -340,25 +443,26 @@ export async function getSubproject(q: Query, id: string, today = localToday()) 
 // ---------------- steps of one project ----------------
 
 /**
- * The project follows its steps: once any step has started it is in progress, and when every
- * counted step is done it is done. Choosing 'paused' by hand is never overridden.
+ * Keep the project's status in line with its steps after every step change. 'paused' is the
+ * owner's choice and stays; a project without counted steps keeps the status chosen by hand.
  */
 async function syncStatus(q: Query, subId: string, today: string) {
   const sub = await subRow(q, subId);
   if (sub.status === 'paused') return;
   const steps = (await stepsOf(q, [subId])).get(subId)!;
-  const counted = steps.filter((s) => s.status !== 'skipped');
-  const allDone = counted.length > 0 && counted.every((s) => s.status === 'done');
-  const started = steps.some((s) => s.status === 'doing' || s.status === 'done');
-  let status = sub.status as string;
-  if (allDone) status = 'done';
-  else if (status === 'done' || (status === 'planned' && started)) status = 'active';
-  if (status === sub.status) return;
-  const doneOn = status === 'done' ? counted.reduce((m, s) => ((s.done_on as string) > m ? (s.done_on as string) : m), '') || today : null;
-  await q('UPDATE subprojects SET status=$2, done_on=$3, updated_at=now() WHERE id=$1', [subId, status, doneOn]);
+  const derived = fromSteps(steps);
+  if (derived === null || derived === sub.status) return;
+  // 'active' chosen by hand before any step started is kept until the steps say more.
+  if (derived === 'planned' && sub.status === 'active') return;
+  const doneOn = derived === 'done' ? (lastDoneOn(steps) ?? today) : null;
+  await q('UPDATE subprojects SET status=$2, done_on=$3, updated_at=now() WHERE id=$1', [subId, derived, doneOn]);
 }
 
-async function stepRow(q: Query, id: string): Promise<Row> {
+/** Find a step and lock its project, then read the step again so it is current. */
+async function lockStep(q: Query, id: string): Promise<Row> {
+  const [found] = await q('SELECT subproject_id FROM subproject_steps WHERE id=$1 AND deleted_at IS NULL', [id]);
+  if (!found) throw notFound('step');
+  await lockSub(q, found.subproject_id as string);
   const [row] = await q('SELECT * FROM subproject_steps WHERE id=$1 AND deleted_at IS NULL', [id]);
   if (!row) throw notFound('step');
   return row;
@@ -366,12 +470,12 @@ async function stepRow(q: Query, id: string): Promise<Row> {
 
 export async function addStep(q: Query, subId: string, input: Record<string, unknown>, today = localToday()) {
   rejectUnknown(input, ['title', 'start_on', 'end_on'], 'step');
-  const sub = await subRow(q, subId);
+  const sub = await lockSub(q, subId);
   const [last] = await q(
     'SELECT max(position) AS p, max(end_on) AS e FROM subproject_steps WHERE subproject_id=$1 AND deleted_at IS NULL',
     [subId],
   );
-  const start = input.start_on ? planDate(input.start_on, 'start_on') : last?.e ? addDays(last.e as string, 1) : (sub.start_on as string);
+  const start = input.start_on ? planDate(input.start_on, 'start_on') : inPlan(last?.e ? addDays(last.e as string, 1) : (sub.start_on as string), 'start_on');
   const end = input.end_on ? planDate(input.end_on, 'end_on') : start;
   if (end < start) throw invalid('end_on must not be before start_on');
   const id = randomUUID();
@@ -389,11 +493,12 @@ export async function addStep(q: Query, subId: string, input: Record<string, unk
 
 /**
  * Change only the fields given. 'done' dates the step today; any other status clears that date.
- * With shift_following, moving this step's end moves every later step by the same number of days.
+ * With shift_following, moving this step's end moves every later unfinished step by the same days.
+ * Run inside one transaction (as the API does), the step and the later steps move together or not at all.
  */
 export async function updateStep(q: Query, id: string, fields: Record<string, unknown>, today = localToday()) {
   rejectUnknown(fields, ['title', 'start_on', 'end_on', 'status', 'note', 'shift_following'], 'step');
-  const row = await stepRow(q, id);
+  const row = await lockStep(q, id);
   const next: Record<string, unknown> = { ...row };
   for (const [key, raw] of Object.entries(fields)) {
     if (key === 'shift_following') continue;
@@ -406,27 +511,20 @@ export async function updateStep(q: Query, id: string, fields: Record<string, un
   next.done_on = next.status === 'done' ? (row.done_on ?? today) : null;
   const keys = ['title', 'start_on', 'end_on', 'status', 'done_on', 'note'].filter((k) => next[k] !== row[k]);
   if (!keys.length) return 'unchanged' as const;
+  const delta = dayNumber(next.end_on as string) - dayNumber(row.end_on as string);
+  if (fields.shift_following === true && delta !== 0) await shiftSteps(q, row.subproject_id as string, delta, Number(row.position));
   await q(`UPDATE subproject_steps SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(',')}, updated_at=now() WHERE id=$1`, [
     id,
     ...keys.map((k) => next[k]),
   ]);
-  const delta = dayNumber(next.end_on as string) - dayNumber(row.end_on as string);
-  if (fields.shift_following === true && delta !== 0) {
-    await q(
-      `UPDATE subproject_steps SET start_on=to_char(start_on::date + $3::int, 'YYYY-MM-DD'),
-         end_on=to_char(end_on::date + $3::int, 'YYYY-MM-DD'), updated_at=now()
-       WHERE subproject_id=$1 AND position>$2 AND deleted_at IS NULL AND status<>'done'`,
-      [row.subproject_id, row.position, delta],
-    );
-  }
-  await syncStatus(q, row.subproject_id as string, today);
+  if (keys.includes('status')) await syncStatus(q, row.subproject_id as string, today);
   return 'updated' as const;
 }
 
 /** Swap a step with its neighbour above (-1) or below (1). */
 export async function moveStep(q: Query, id: string, direction: unknown) {
   const dir = oneOf(String(direction), ['-1', '1'], 'direction') === '-1' ? -1 : 1;
-  const row = await stepRow(q, id);
+  const row = await lockStep(q, id);
   const [other] = await q(
     `SELECT id, position FROM subproject_steps WHERE subproject_id=$1 AND deleted_at IS NULL
      AND position ${dir < 0 ? '<' : '>'} $2 ORDER BY position ${dir < 0 ? 'DESC' : 'ASC'} LIMIT 1`,
@@ -441,11 +539,12 @@ export async function moveStep(q: Query, id: string, direction: unknown) {
 }
 
 export async function deleteStep(q: Query, id: string, today = localToday()): Promise<boolean> {
-  const [row] = await q('SELECT subproject_id, deleted_at FROM subproject_steps WHERE id=$1', [id]);
-  if (!row) throw notFound('step');
-  if (row.deleted_at !== null) return false;
-  await q('UPDATE subproject_steps SET deleted_at=now(), updated_at=now() WHERE id=$1', [id]);
-  await syncStatus(q, row.subproject_id as string, today);
+  const [found] = await q('SELECT subproject_id, deleted_at FROM subproject_steps WHERE id=$1', [id]);
+  if (!found) throw notFound('step');
+  if (found.deleted_at !== null) return false;
+  await lockSub(q, found.subproject_id as string);
+  await q('UPDATE subproject_steps SET deleted_at=now(), updated_at=now() WHERE id=$1 AND deleted_at IS NULL', [id]);
+  await syncStatus(q, found.subproject_id as string, today);
   return true;
 }
 
@@ -464,7 +563,7 @@ async function milestones(q: Query, projectId?: string): Promise<Row[]> {
 type Sub = ReturnType<typeof subView>;
 
 function card(row: Row, subs: Sub[], projectMilestones: Row[], today: string) {
-  const goal = projectMilestones.find((m) => m.status === 'planned') ?? null;
+  const goal = projectMilestones.find((m) => m.status === 'planned' && (m.target_on as string) >= today) ?? null;
   const upcoming = subs.filter((s) => s.status === 'planned').sort((a, b) => (a.start_on as string).localeCompare(b.start_on as string));
   return {
     id: row.id,
@@ -501,7 +600,9 @@ export async function overview(q: Query, today = localToday()) {
     ),
     subprojects: subs,
     milestones: allMilestones.filter((m) => m.status !== 'dropped'),
-    upcoming_milestones: allMilestones.filter((m) => m.status === 'planned').slice(0, 8),
+    // Ahead of today, so goals that slipped past do not push the next ones off the list.
+    upcoming_milestones: allMilestones.filter((m) => m.status === 'planned' && (m.target_on as string) >= today).slice(0, 8),
+    overdue_milestones: allMilestones.filter((m) => m.status === 'planned' && (m.target_on as string) < today),
   };
 }
 

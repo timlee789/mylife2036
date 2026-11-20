@@ -67,8 +67,16 @@ export interface Sub {
   title: string;
   status: SubStatus;
   start_on: string;
+  /** The target the owner set. */
   due_on: string;
+  /** When it will likely finish, from the steps still to do. */
+  forecast_on: string;
+  late: boolean;
+  /** Where the bar ends on the long timelines. */
   end_on: string;
+  /** The span the project's own timeline shows, so no step falls outside it. */
+  span_start: string;
+  span_end: string;
   done_on: string | null;
   vault_note: string | null;
   sort_order: number;
@@ -124,6 +132,7 @@ export interface ProjectOverview {
   subprojects: Sub[];
   milestones: Milestone[];
   upcoming_milestones: Milestone[];
+  overdue_milestones: Milestone[];
 }
 
 export interface ProjectDetail extends ProjectCard {
@@ -150,7 +159,7 @@ export const projectApi = {
   addSub: (projectId: string, fields: { title: string; start_on: string; due_on?: string; use_procedure: boolean }) =>
     request<{ id: string }>('POST', `/projects/${projectId}/subprojects`, fields),
   sub: (id: string) => request<SubDetail>('GET', `/subprojects/${id}`),
-  updateSub: (id: string, fields: Partial<Pick<Sub, 'title' | 'status' | 'start_on' | 'due_on' | 'vault_note'>>) =>
+  updateSub: (id: string, fields: Partial<Pick<Sub, 'title' | 'status' | 'start_on' | 'due_on' | 'vault_note'>> & { shift_steps?: boolean }) =>
     request<unknown>('PATCH', `/subprojects/${id}`, fields),
   deleteSub: (id: string) => request<void>('DELETE', `/subprojects/${id}`),
   applyProcedure: (id: string) => request<unknown>('POST', `/subprojects/${id}/apply-procedure`),

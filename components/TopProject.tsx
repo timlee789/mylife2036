@@ -118,7 +118,10 @@ function SubRow({ sub, go, color }: { sub: Sub; go: Go; color: string }) {
         {sub.steps_total ? `${sub.steps_done}/${sub.steps_total}단계` : ''}
         {sub.current_step && sub.status !== 'done' ? ` · 지금: ${sub.current_step.title}` : ''}
       </span>
-      <span className="meta">{sub.status === 'done' && sub.done_on ? `${shortDay(sub.done_on)} 마침` : `${dateRange(sub.start_on, sub.due_on)}`}</span>
+      <span className="meta">
+        {sub.status === 'done' && sub.done_on ? `${shortDay(sub.done_on)} 마침` : `${dateRange(sub.start_on, sub.due_on)}`}
+        {sub.late ? ` · 끝 예정 ${shortDay(sub.forecast_on)}` : ''}
+      </span>
     </li>
   );
 }

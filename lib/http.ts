@@ -18,7 +18,12 @@ export function handler<C>(run: (q: Query, request: Request, context: C) => Prom
       if (request.method !== 'GET' && request.headers.get('x-pm-request') !== '1') {
         return error(403, 'csrf_rejected', 'Missing app request header.');
       }
-      const result = await run(await db(), request, context);
+      const database = await db();
+      // Reads run as they are; every change is one transaction (all of it saved, or none of it).
+      const result =
+        request.method === 'GET'
+          ? await run(database.query, request, context)
+          : await database.transaction((q) => run(q, request, context));
       return result === undefined ? new NextResponse(null, { status: 204 }) : NextResponse.json(result, { status });
     } catch (problem) {
       if (problem instanceof AppError) return error(problem.status, problem.code, problem.message);

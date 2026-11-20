@@ -142,15 +142,26 @@ function Overview({ go }: { go: Go }) {
                 {data.upcoming_milestones.map((m) => (
                   <li key={m.id}>
                     <button className="link" onClick={() => go({ top: m.project_id })}>◆ {m.title}</button>
-                    <span className="meta">
-                      {m.project_title} · {shortDay(m.target_on)}
-                      {m.target_on < data.today ? ' · 날짜 다시 정하기' : ''}
-                    </span>
+                    <span className="meta">{m.project_title} · {shortDay(m.target_on)}</span>
                   </li>
                 ))}
               </ul>
             )}
           </section>
+          {data.overdue_milestones.length > 0 && (
+            <section>
+              <h3>날짜 다시 정하기</h3>
+              <p className="hint">날짜가 지난 이정표입니다. 옮기거나 내려놓아도 됩니다.</p>
+              <ul className="lines">
+                {data.overdue_milestones.map((m) => (
+                  <li key={m.id}>
+                    <button className="link" onClick={() => go({ top: m.project_id })}>◆ {m.title}</button>
+                    <span className="meta">{m.project_title} · {shortDay(m.target_on)}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <NewTopProject onDone={load} onError={setProblem} />
         </>
       )}

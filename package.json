@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Tim's project management site: four long-running projects seen together until 2036.",
-  "engines": { "node": ">=20.9.0" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
